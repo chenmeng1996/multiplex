@@ -26,10 +26,25 @@ typedef struct server_context_st {
 static server_context_st *s_srv_ctx = NULL;
 
 /*===========================================================================
+ * fd_set select文件句柄的集合
+ * FD_ZERO 清空这个集合
+ * FD_SET 往这个集合加入一个文件句柄
+ * FD_CLR 把文件句柄从集合中删除
+ * FD_ISSET 查看某一个文件句柄是否在集合中
+ *
+ * accept 用于从已完成连接队列返回下一个已完成连接，服务端连接客户端（TCP连接）
  * ==========================================================================*/
+/**
+ * 创建服务端进程，监听端口
+ * @param ip
+ * @param port
+ * @return
+ */
 static int create_server_proc(const char *ip, int port) {
     int fd;
+    //套接字数据结构
     struct sockaddr_in servaddr;
+    //新建socket
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
         fprintf(stderr, "create socket fail,erron:%d,reason:%s\n",
@@ -43,16 +58,21 @@ static int create_server_proc(const char *ip, int port) {
         return -1;
     }
 
+    //初始化 套接字数据结构
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
+    //ip地址转换成数字
     inet_pton(AF_INET, ip, &servaddr.sin_addr);
+    //端口转换成 ？
     servaddr.sin_port = htons(port);
 
+    //将套接字 与 套接字数据结构绑定，即与ip:port绑定
     if (bind(fd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
         perror("bind error: ");
         return -1;
     }
 
+    //套接字开始监听端口
     listen(fd, LISTENQ);
 
     return fd;
@@ -72,6 +92,7 @@ static int accept_client_proc(int srvfd) {
     printf("accpet clint proc is called.\n");
 
     ACCEPT:
+    //服务端从已连接队列中取出下一个已连接套接字
     clifd = accept(srvfd, (struct sockaddr *) &cliaddr, &cliaddrlen);
 
     if (clifd == -1) {
@@ -105,6 +126,7 @@ static int accept_client_proc(int srvfd) {
 static int handle_client_msg(int fd, char *buf) {
     assert(buf);
     printf("recv buf is :%s\n", buf);
+    //向已连接套接字中写数据（即向客户端发送数据）
     write(fd, buf, strlen(buf) + 1);
     return 0;
 }
@@ -117,6 +139,7 @@ static void recv_client_msg(fd_set *readfds) {
     int i = 0, n = 0;
     int clifd;
     char buf[MAXLINE] = {0};
+    //遍历所有已连接套接字
     for (i = 0; i <= s_srv_ctx->cli_cnt; i++) {
         clifd = s_srv_ctx->clifds[i];
         if (clifd < 0) {
@@ -148,7 +171,7 @@ static void handle_client_proc(int srvfd) {
     while (1) {
         /*每次调用select前都要重新设置文件描述符和时间，因为事件发生后，文件描述符和时间都被内核修改啦*/
         FD_ZERO(readfds);
-        /*添加监听套接字*/
+        /*添加服务端监听套接字*/
         FD_SET(srvfd, readfds);
         s_srv_ctx->maxfd = srvfd;
 
@@ -164,7 +187,10 @@ static void handle_client_proc(int srvfd) {
             s_srv_ctx->maxfd = (clifd > s_srv_ctx->maxfd ? clifd : s_srv_ctx->maxfd);
         }
         printf("111");
-        /*开始轮询接收处理服务端和客户端套接字，如果没有连接或者连接上没有数据，则阻塞*/
+        /*调用select函数，
+         * 将fd_set拷贝到内核，注册回调函数。
+         * 内核开始轮询接收处理服务端和客户端套接字，调用其对应的poll方法，
+         * 如果没有连接或者连接没有数据，poll方法会调用回调函数，将当前线程挂到设备的等待队列；如果有连接或者数据，poll会调用回调函数，唤醒等待队列上睡眠的线程，然后poll返回该连接的mask掩码*/
         retval = select(s_srv_ctx->maxfd + 1, readfds, NULL, NULL, &tv);
         printf("222");
         if (retval == -1) {
@@ -175,12 +201,12 @@ static void handle_client_proc(int srvfd) {
             fprintf(stdout, "select is timeout.\n");
             continue;
         }
-        //是否建立连接，没连接的话就建立连接，连接过就处理连接传来的消息（感觉是优先处理建立连接）
+        //当有新的客户端发起连接，select函数唤醒调用者，服务端监听套接字还在fd_set中
         if (FD_ISSET(srvfd, readfds)) {
-            /*监听客户端请求*/
+            /*处理新的客户端连接*/
             accept_client_proc(srvfd);
         } else {
-            /*接受处理客户端消息*/
+            /*当已连接的客户端发来消息，select函数唤醒调用者，此时fd_set被内核修改了，只有有数据的连接套接字在fd_set中，所以服务端监听套接字不在fd_set中。此时处理有消息的连接*/
             recv_client_msg(readfds);
         }
     }
@@ -193,12 +219,18 @@ static void server_uninit() {
     }
 }
 
+/**
+ * 初始化
+ * @return
+ */
 static int server_init() {
+    //申请内存
     s_srv_ctx = (server_context_st *) malloc(sizeof(server_context_st));
     if (s_srv_ctx == NULL) {
         return -1;
     }
 
+    //为新申请的内存做初始化
     memset(s_srv_ctx, 0, sizeof(server_context_st));
 
     int i = 0;
@@ -210,7 +242,7 @@ static int server_init() {
 }
 
 int main(int argc, char *argv[]) {
-    int srvfd;
+    int srvfd; //服务端句柄
     /*初始化服务端context*/
     if (server_init() < 0) {
         return -1;
