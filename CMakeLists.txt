@@ -5,3 +5,4 @@ set(CMAKE_C_STANDARD 11)
 
 add_executable(multiplex1 select/server.c)
 add_executable(multiplex2 select/client.c)
+add_executable(multiplex3 epoll/server.c)
